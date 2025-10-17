@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Arcade 2D Car Race</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --road: #2a2a2a;
+      --grass: #2e8b4f;
+      --line: #fff;
+      --player: #ffd043;
+      --obst1: #e74c3c;
+      --obst2: #3498db;
+      --obst3: #f1c40f;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: radial-gradient(circle at 50% -20%, #1e2a40 0%, #0b1a24 60%, #0b0f14 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    #gameContainer {
+      width: min(1000px, 100vw);
+      aspect-ratio: 16 / 9;
+      margin: 20px auto;
+      position: relative;
+      border: 2px solid #2e3a47;
+      border-radius: 12px;
+      background: #000;
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0,0,0,.4);
+      display: block;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
+    /* HUD (top corners) */
+    #hud {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      font-weight: bold;
+      text-shadow: 0 1px 2px rgba(0,0,0,.6);
+      z-index: 2;
+    }
+    #hudRight {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      font-weight: bold;
+      text-shadow: 0 1px 2px rgba(0,0,0,.6);
+      z-index: 2;
+    }
+    .hudChip {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: rgba(0,0,0,.25);
+      margin-left: 8px;
+      border: 1px solid rgba(255,255,255,.15);
+    }
+
+    /* Overlays */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(0,0,0,.5);
+      z-index: 3;
+      text-align: center;
+    }
+    .overlay.active { display: grid; }
+
+    .panel {
+      background: rgba(20, 25, 35, 0.95);
+      padding: 28px 28px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.15);
+      min-width: 280px;
+      max-width: 90%;
+    }
+
+    h1, h2 { margin: 0 0 12px; font-weight: 800; letter-spacing: .5px; }
+    p { margin: 8px 0 0; opacity: .95; }
+
+    button {
+      cursor: pointer;
+      padding: 12px 18px;
+      border-radius: 8px;
+      border: none;
+      background: #0f8cdb;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      transition: transform .08s ease, background .2s ease;
+    }
+    button:hover { background: #1380d9; }
+    button:active { transform: scale(0.98); }
+
+    @media (max-width: 600px) {
+      .panel { padding: 20px; }
+      h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer" aria-label="Car racing game container">
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="hud">
+      Score: <span id="scoreVal">0</span>
+      <span class="hudChip" id="speedChip">Speed: 0</span>
+    </div>
+
+    <div id="hudRight" class="hudChip" style="visibility:hidden;">
+      Speed: 0
+    </div>
+
+    <!-- Start Screen -->
+    <div id="startScreen" class="overlay active">
+      <div class="panel" role="dialog" aria-label="Start screen">
+        <h1>Arcade Dash</h1>
+        <p>Top-down 2D car racing. Use Left/Right or A/D to steer. Reach the high score!</p>
+        <div style="margin-top:14px;">
+          <button id="startBtn">Start Game</button>
+        </div>
+        <p style="font-size:12px; opacity:.8; margin-top:8px;">Tip: lanes are 3-wide. Collide with obstacles to end the run.</p>
+      </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="gameOverScreen" class="overlay" aria-label="Game over screen">
+      <div class="panel" role="dialog">
+        <h2>Game Over</h2>
+        <p>Your Score: <strong id="finalScore">0</strong></p>
+        <p>High Score: <strong id="storedHigh">0</strong></p>
+        <div style="margin-top:14px;">
+          <button id="restartBtn">Play Again</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Simple arcade-style 2D car racing game using HTML5 Canvas
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById('gameCanvas');
+      const hudScore = document.getElementById('scoreVal');
+      const hudSpeed = document.getElementById('speedChip');
+      const startScreen = document.getElementById('startScreen');
+      const gameOverScreen = document.getElementById('gameOverScreen');
+      const startBtn = document.getElementById('startBtn');
+      const restartBtn = document.getElementById('restartBtn');
+      const finalScoreEl = document.getElementById('finalScore');
+      const storedHighEl = document.getElementById('storedHigh');
+
+      const ctx = canvas.getContext('2d');
+
+      let viewW = 0, viewH = 0;
+      let roadX = 0, roadW = 0;
+
+      // Road and lanes
+      const LANE_COUNT = 3;
+      let laneCenters = [0,0,0]; // to be computed after resize
+      // Player / obstacles sizing
+      let playerW = 0, playerH = 0;
+
+      // Game state
+      let obstacles = [];
+      let stripeOffset = 0;
+      let score = 0;
+      let currentSpeed = 0;
+      let laneIndex = 1; // 0 left, 1 middle, 2 right
+      let gameState = 'menu'; // 'menu' | 'playing' | 'gameover'
+      let lastTime = 0;
+      let spawnTimer = 0;
+      let nextSpawn = 0;
+
+      // Audio
+      let audioCtx = null;
+      let audioUnlocked = false;
+
+      function ensureAudio() {
+        if (audioCtx) return;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioCtx();
+      }
+
+      function unlockAudioOnInteraction() {
+        // some browsers require a user gesture to unlock audio
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+      }
+
+      function playAcceleration() {
+        ensureAudio();
+        try {
+          const t = audioCtx.currentTime;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.value = 900;
+          gain.gain.value = 0.0;
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          gain.gain.linearRampToValueAtTime(0.25, t + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+          osc.start(t); osc.stop(t + 0.3);
+        } catch (e) { /* ignore */ }
+      }
+
+      function playCollision() {
+        ensureAudio();
+        try {
+          const t = audioCtx.currentTime;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = 120;
+          gain.gain.value = 0.0;
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          gain.gain.setValueAtTime(0.0, t);
+          gain.gain.linearRampToValueAtTime(0.6, t + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+          osc.start(t); osc.frequency.exponentialRampToValueAtTime(30, t + 0.25);
+          osc.stop(t + 0.3);
+        } catch (e) { /* ignore */ }
+      }
+
+      // Helpers
+      function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+      function rand(min, max){ return Math.random() * (max - min) + min; }
+      function randInt(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+      // Resize & layout
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.parentElement.getBoundingClientRect();
+        viewW = rect.width;
+        viewH = rect.height;
+
+        canvas.width = Math.floor(viewW * dpr);
+        canvas.height = Math.floor(viewH * dpr);
+        // scale drawing to CSS pixels
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // Road and lanes sizing
+        roadW = viewW * 0.62;
+        roadX = (viewW - roadW) * 0.5;
+        laneCenters = [
+          roadX + roadW * 0.25,
+          roadX + roadW * 0.5,
+          roadX + roadW * 0.75
+        ];
+        playerW = roadW * 0.18;
+        playerH = viewH * 0.18;
+
+        // Obstacles use proportional size to road
+        // We'll recompute in draw since roadW/ viewH may change
+      }
+
+      // Draw routines
+      function drawRoad() {
+        // Grass sides
+        ctx.fillStyle = '#2e3b2a';
+        ctx.fillRect(0, 0, roadX, viewH);
+        ctx.fillRect(roadX + roadW, 0, viewW - (roadX + roadW), viewH);
+
+        // Road
+        ctx.fillStyle = '#333';
+        ctx.fillRect(roadX, 0, roadW, viewH);
+
+        // Lane edges (white borders)
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(roadX, 0, 6, viewH); // left edge
+        ctx.fillRect(roadX + roadW - 6, 0, 6, viewH); // right edge
+
+        // Moving center dashed line (vertical segments)
+        const stripeW = 8;
+        const stripeLen = 40;
+        const stripeGap = 60;
+        // stripe offset scrolls downward
+        for (let y = -stripeLen; y < viewH; y += stripeLen + stripeGap) {
+          const sy = y + stripeOffset;
+          if (sy >= -stripeLen && sy <= viewH) {
+            ctx.fillStyle = '#fff';
+            // center line between the two road halves
+            const cx = viewW / 2;
+            ctx.fillRect(cx - stripeW / 2, sy, stripeW, stripeLen);
+          }
+        }
+      }
+
+      function drawCar(x, y, w, h, color) {
+        const r = Math.min(12, Math.min(w, h) * 0.22);
+        ctx.fillStyle = color;
+        // rounded rectangle
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+        ctx.fill();
+        // window highlight
+        ctx.fillStyle = 'rgba(255,255,255,.25)';
+        ctx.fillRect(x + w * 0.15, y + h * 0.18, w * 0.6, h * 0.2);
+      }
+
+      function drawObstacles() {
+        for (let o of obstacles) {
+          drawCar(o.x, o.y, o.w, o.h, o.color);
+        }
+      }
+
+      function drawPlayer() {
+        // Player car near bottom, centered in current lane
+        const px = laneCenters[laneIndex] - playerW * 0.5;
+        const py = viewH - playerH - 20;
+        drawCar(px, py, playerW, playerH, '#ffd043');
+      }
+
+      function drawScores() {
+        // Top HUD is HTML, but we also render a subtle shadow on canvas if desired
+      }
+
+      function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+        return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+      }
+
+      function update(dt) {
+        // Speed increases as score grows, cap at a max
+        const BASE_SPEED = 210;
+        const MAX_SPEED = 900;
+        currentSpeed = clamp(BASE_SPEED + score * 2.0, BASE_SPEED, MAX_SPEED);
+
+        // Spawning obstacles
+        spawnTimer += dt;
+        if (spawnTimer >= nextSpawn) {
+          spawnTimer = 0;
+          nextSpawn = rand(0.8, 1.6);
+          spawnObstacle();
+        }
+
+        // Move obstacles downward
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          const o = obstacles[i];
+          o.y += currentSpeed * dt;
+          if (o.y > viewH + o.h + 20) obstacles.splice(i, 1);
+        }
+
+        // Collision detection
+        const px = laneCenters[laneIndex] - playerW * 0.5;
+        const py = viewH - playerH - 20;
+        for (let o of obstacles) {
+          if (rectsOverlap(px, py, playerW, playerH, o.x, o.y, o.w, o.h)) {
+            // collision
+            gameOver();
+            break;
+          }
+        }
+
+        // Scores: increase over time
+        score += dt * 100; // 100 points per second
+        hudScore.textContent = Math.floor(score);
+        hudSpeed.textContent = Math.floor(currentSpeed);
+      }
+
+      function spawnObstacle() {
+        // pick a lane and spawn above the screen
+        const lane = randInt(0, LANE_COUNT - 1);
+        const w = roadW * 0.18;
+        const h = viewH * 0.12;
+        let ox = laneCenters[lane] - w * 0.5;
+        const oy = -rand(40, 240);
+        // Colors by lane for variety
+        const colors = [ '#e74c3c', '#3498db', '#f39c12' ];
+        const color = colors[lane];
+        obstacles.push({ x: ox, y: oy, w: w, h: h, color: color });
+        // tiny acceleration spark could be added here
+      }
+
+      function gameOver() {
+        if (gameState !== 'playing') return;
+        gameState = 'gameover';
+        // update high score
+        const stored = localStorage.getItem('arcade_speed_high');
+        const high = stored ? Number(stored) : 0;
+        const newHigh = Math.max(high, Math.floor(score));
+        localStorage.setItem('arcade_speed_high', String(newHigh));
+        finalScoreEl.textContent = Math.floor(score);
+        storedHighEl.textContent = newHigh;
+        startScreen.style.display = 'none';
+        gameOverScreen.style.display = 'flex';
+        // play collision sound
+        playCollision();
+      }
+
+      function resetGame() {
+        obstacles = [];
+        score = 0;
+        stripeOffset = 0;
+        laneIndex = 1;
+        spawnTimer = 0;
+        nextSpawn = rand(0.8, 1.6);
+        gameState = 'menu';
+      }
+
+      // Main loop
+      function loop(now) {
+        if (gameState === 'playing') {
+          const dt = Math.min(0.033, (now - lastTime) / 1000);
+          lastTime = now;
+          stripeOffset += currentSpeed * dt * 0.15; // subtle parallax
+          update(dt);
+          draw();
+          requestAnimationFrame(loop);
+        }
+      }
+
+      function draw() {
+        // Clear
+        ctx.clearRect(0, 0, viewW, viewH);
+
+        // Draw world
+        drawRoad();
+        drawObstacles();
+        drawPlayer();
+
+        // Subtle vignette
+        const g = ctx.createRadialGradient(viewW/2, viewH, viewW*0.2, viewW/2, viewH/2, viewW);
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(1, 'rgba(0,0,0,.25)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0,0,viewW,viewH);
+      }
+
+      // Input
+      let keyHeld = { left: false, right: false };
+      window.addEventListener('keydown', (e) => {
+        if (['ArrowLeft','a','A'].includes(e.key)) {
+          if (!keyHeld.left) {
+            keyHeld.left = true;
+            if (gameState === 'menu') {
+              // start on first input
+              startGame();
+            } else if (gameState === 'playing') {
+              laneIndex = Math.max(0, laneIndex - 1);
+              playAcceleration();
+            }
+          }
+          e.preventDefault();
+        } else if (['ArrowRight','d','D'].includes(e.key)) {
+          if (!keyHeld.right) {
+            keyHeld.right = true;
+            if (gameState === 'menu') {
+              startGame();
+            } else if (gameState === 'playing') {
+              laneIndex = Math.min(LANE_COUNT - 1, laneIndex + 1);
+              playAcceleration();
+            }
+          }
+          e.preventDefault();
+        } else if (e.key === 'Escape') {
+          // optional: pause not implemented
+        }
+      });
+      window.addEventListener('keyup', (e) => {
+        if (['ArrowLeft','a','A'].includes(e.key)) { keyHeld.left = false; }
+        if (['ArrowRight','d','D'].includes(e.key)) { keyHeld.right = false; }
+      });
+
+      // Start / Restart handlers
+      function startGame() {
+        // reset and begin
+        startScreen.style.display = 'none';
+        gameOverScreen.style.display = 'none';
+        obstacles = [];
+        score = 0;
+        stripeOffset = 0;
+        laneIndex = 1;
+        spawnTimer = 0;
+        nextSpawn = rand(0.8, 1.6);
+        gameState = 'playing';
+        lastTime = performance.now();
+        // recompute dims (in case of resize)
+        resize();
+        // initial draw
+        draw();
+        ensureAudio();
+        // start loop
+        requestAnimationFrame(loop);
+      }
+
+      // Restart button
+      restartBtn.addEventListener('click', () => {
+        gameOverScreen.style.display = 'none';
+        startScreen.style.display = 'none';
+        startGame();
+      });
+      startBtn.addEventListener('click', () => {
+        startGame();
+      });
+
+      // Resize handling
+      window.addEventListener('resize', () => {
+        resize();
+        // Redraw immediately after resize (no state loss)
+        if (gameState === 'playing') {
+          draw();
+        } else {
+          // show clean start
+          draw();
+        }
+      });
+
+      // Init
+      function init() {
+        // initial layout
+        resize();
+        // show start screen
+        startScreen.style.display = 'flex';
+        gameOverScreen.style.display = 'none';
+        // load high score for display
+        const high = localStorage.getItem('arcade_speed_high') || '0';
+        storedHighEl = storedHighEl; // no-op to satisfy linter
+        if (storedHighEl) storedHighEl.textContent = high;
+      }
+
+      // Start initial
+      init();
+      // Ensure audio is unlocked after first user interaction (start button)
+      startBtn.addEventListener('click', unlockAudioOnInteraction);
+      restartBtn.addEventListener('click', unlockAudioOnInteraction);
+      // Also unlock on first key press (to support quick start)
+      window.addEventListener('keydown', unlockAudioOnInteraction, { once: true });
+
+      // Expose some state for potential debugging (optional)
+      window._arcade = {
+        getState: () => gameState,
+      };
+
+    })();
+  </script>
+</body>
+</html>
